@@ -1,0 +1,42 @@
+{
+  "name": "CountDemTabs",
+  "short_name": "CountDemTabs",
+  "author": "stapmoshun",
+  "developer": {
+    "name": "stapmoshun",
+    "url": "https://addons.mozilla.org/en-US/firefox/user/19016563/"
+  },
+  "version": "1.0.0",
+  "description": "A great badge for showing tab count, including an animation for 1000+ tabs!",
+  "homepage_url": "https://github.com/jpfleischer/tab-counter",
+  "manifest_version": 2,
+  "applications": {
+    "gecko": {
+      "id": "d89082b0-1c90-4d48-95b7-6bc6861e1bc2@stapmoshun",
+      "strict_min_version": "52.0"
+    }
+  },
+  "icons": {
+    "1": "icons/tabcounter-logo.plain.min.svg"
+  },
+  "permissions": ["storage","tabs"],
+  "browser_action": {
+    "browser_style": true,
+    "default_area": "tabstrip",
+    "default_icon": "icons/tabcounter.plain.min.svg",
+    "theme_icons": [{
+      "dark": "icons/tabcounter-gray10.plain.min.svg",
+      "light": "icons/tabcounter-gray90.plain.min.svg",
+      "size": 1
+    }],
+    "default_popup": "src/popup.html",
+    "default_title": "Tab Counter"
+  },
+  "options_ui": {
+    "page": "src/options.html"
+  },
+  "background": {
+    "scripts": ["src/background.js"],
+    "persistent": true
+  }
+}

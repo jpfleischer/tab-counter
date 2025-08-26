@@ -80,7 +80,27 @@
           </td>
           <td><em>A maximum of four characters can be displayed on the badge; this is a browser limitation.</em></td>
         </tr>
-        <tr>
+        <tr style="display: none">
+          <td>Pan speed</td>
+          <td>
+            <input
+              id="panPeriodMs"
+              name="panPeriodMs"
+              type="range"
+              optionType="number"
+              min="1200"
+              max="6000"
+              step="100"
+              value="2400"
+            />
+            <br />
+            <small>
+              <output id="panPeriodMs_out">2400 ms (2.40 s)</output>
+            </small>
+          </td>
+          <td><em>Time for one full left→right→left cycle. Lower = faster.</em></td>
+        </tr>
+            
       </table>
     </form>
     <script type="text/javascript" src="options.js"></script>

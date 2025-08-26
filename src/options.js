@@ -46,26 +46,44 @@ async function saveOptions () {
 }
 
 async function restoreOptions () {
-  restored = true
-  let settings = await browser.storage.local.get()
+  restored = true;
+  let settings = await browser.storage.local.get();
   for (let setting in settings) {
     if (setting !== 'version') {
-      let el = document.querySelector(`#${setting}`)
-      if (el.getAttribute('type') === 'checkbox') el.checked = settings[setting]
-      else el.value = settings[setting]
-      el.parentElement.parentElement.style.display = 'block'
+      let el = document.querySelector(`#${setting}`);
+      if (!el) continue;
+      if (el.getAttribute('type') === 'checkbox') el.checked = settings[setting];
+      else el.value = settings[setting];
+      // show this control
+      el.parentElement.parentElement.style.display = 'block';
     }
   }
-  checkBadgeColorManualSetting()
+  // keep your existing color toggle
+  checkBadgeColorManualSetting();
+
+  // NEW: update readout after restore
+  const v = parseInt(document.querySelector('#panPeriodMs')?.value || '2400', 10);
+  setPanReadout(v);
 }
 
 function start () {
-  browserReady = true
-  if (domReady && !restored) restoreOptions()
+  browserReady = true;
+  if (domReady && !restored) restoreOptions();
   for (let el of document.querySelectorAll('input, select')) {
-    el.addEventListener('change', saveOptions)
+    el.addEventListener('change', saveOptions);
+  }
+  // NEW: live readout while sliding
+  const slider = document.querySelector('#panPeriodMs');
+  if (slider) {
+    slider.addEventListener('input', (e) => setPanReadout(parseInt(e.target.value, 10)));
   }
 }
+
+function setPanReadout(v) {
+  const out = document.querySelector('#panPeriodMs_out');
+  if (out) out.textContent = `${v} ms (${(v/1000).toFixed(2)} s)`;
+}
+
 
 document.addEventListener('DOMContentLoaded', () => {
   domReady = true
