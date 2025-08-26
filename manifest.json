@@ -3,17 +3,16 @@
   "short_name": "CountDemTabs",
   "author": "stapmoshun",
   "developer": {
-    "name": "stapmoshun",
-    "url": "https://addons.mozilla.org/en-US/firefox/user/19016563/"
+    "name": "stapmoshun"
   },
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A great badge for showing tab count, including an animation for 1000+ tabs!",
   "homepage_url": "https://github.com/jpfleischer/tab-counter",
   "manifest_version": 2,
   "applications": {
     "gecko": {
-      "id": "d89082b0-1c90-4d48-95b7-6bc6861e1bc2@stapmoshun",
-      "strict_min_version": "52.0"
+      "id": "d89082b0-1c90-4d48-95b7-6bc6861e1dc2@stapmoshun",
+      "strict_min_version": "58.0"
     }
   },
   "icons": {

@@ -119,6 +119,40 @@ const focusHandler = (winId) => {
   }
 };
 
+function clearActionIcon(tabId) {
+  const makeClear = (size) => {
+    const c = document.createElement('canvas');
+    c.width = size; c.height = size; // transparent by default
+    return c.getContext('2d').getImageData(0, 0, size, size);
+  };
+  return action.setIcon({ imageData: { 16: makeClear(16), 32: makeClear(32) }, tabId });
+}
+
+
+async function showBadgeText(text, tabId, settings) {
+  // 1) fully stop any animation & forget prior renders
+  stopPan(tabId);
+  panStates.delete(tabId);
+  lastIconTextByTab.delete(tabId);
+
+  // 2) HARD-CLEAR the icon so the native badge is dominant
+  await clearActionIcon(tabId);
+
+  // 3) colors (best-effort)
+  try {
+    await action.setBadgeBackgroundColor({ color: settings.badgeColor || '#000000' });
+    if (settings.badgeTextColorAuto !== true && settings.badgeTextColor) {
+      await action.setBadgeTextColor({ color: settings.badgeTextColor });
+    } else {
+      await action.setBadgeTextColor({ color: null }); // theme-auto if supported
+    }
+  } catch {}
+
+  // 4) native badge text
+  await action.setBadgeText({ text, tabId });
+  log('badge set', text);
+}
+
 
 // per-tab pan state
 const panStates = new Map(); // tabId -> {timer, text, styleKey, geom16, geom32, off, dir}
@@ -231,13 +265,14 @@ function resumeCurrentTabPan() {
   browser.tabs.query({ currentWindow: true, active: true }).then(([tab]) => {
     if (!tab) return;
     const s = panStates.get(tab.id);
-    if (s && !s.timer) {
-      // resume from saved phase
+    // Only resume if it’s a long numeric string (4+)
+    if (s && !s.timer && /^\d{4,}$/.test(s.text)) {
       const opts = { ...(s.opts || READABLE), startPhaseU: s.phaseU ?? 0 };
       startOrUpdatePan(s.text, tab.id, opts);
     }
   }).catch(() => {});
 }
+
 
 
 function stopPan(tabId) {
@@ -473,53 +508,61 @@ async function setIconIfChanged(text, tabId, opts = {}) {
 browser.tabs.onRemoved.addListener(tabId => lastIconTextByTab.delete(tabId));
 
 
-const updateIcon = async function updateIcon () {
-  // Get settings
+// 1) Guard: only the most recent update is allowed to set UI
+let _updateGen = 0;
+
+async function updateIcon () {
+  const myGen = ++_updateGen;
+
+  // --- Gather data using one tabs list to avoid cross-call drift ---
+  const [activeTab] = await browser.tabs.query({ currentWindow: true, active: true });
+  if (!activeTab) return;
+
+  // One shot for all tabs (less jitter than two separate queries)
+  const allTabsList = await browser.tabs.query({});                // all windows
+  const normalWins  = new Set((await browser.windows.getAll({ windowTypes: ['normal'] })).map(w => w.id));
+
+  // Bail if a newer update started while we were awaiting
+  if (myGen !== _updateGen) return;
+
+  const currentWindow = allTabsList.filter(t => t.windowId === activeTab.windowId && normalWins.has(t.windowId)).length.toString();
+  const allTabs       = allTabsList.filter(t => normalWins.has(t.windowId)).length.toString();
+  const allWindows    = String(normalWins.size);
+
+  // Decide text
   const settings = await browser.storage.local.get();
   const counterPreference = settings.counter || 0;
 
-  // Stop if badge disabled
   if (counterPreference === 3) return;
 
-  // Active tab
-  const currentTab = (await browser.tabs.query({ currentWindow: true, active: true }))[0];
-  if (!currentTab) return;
-
-  // Counts
-  const currentWindow = (await browser.tabs.query({ currentWindow: true })).length.toString();
-  const allTabs       = (await browser.tabs.query({})).length.toString();
-  const allWindows    = (await browser.windows.getAll({ populate: false, windowTypes: ['normal'] })).length.toString();
-
-  // Decide text (default to currentWindow)
   let text = currentWindow;
   if (counterPreference === 1) text = allTabs;
   else if (counterPreference === 2) text = `${currentWindow}/${allTabs}`;
   else if (counterPreference === 4) text = allWindows;
 
+  // Paint (with your existing badge/pan logic)
   const digitsOnly = /^[0-9]+$/.test(text);
-
-  const period = typeof settings.panPeriodMs === 'number' ? settings.panPeriodMs : 2400;
-
   if (digitsOnly && text.length >= 4) {
-    await action.setBadgeText({ text: '', tabId: currentTab.id });
-    await startOrUpdatePan(text, currentTab.id, { ...READABLE, panPeriodMs: period });
+    const period = Number(settings.panPeriodMs) || 2400;
+    await action.setBadgeText({ text: '', tabId: activeTab.id });
+    await startOrUpdatePan(text, activeTab.id, { ...READABLE, panPeriodMs: period });
   } else {
-    stopPan(currentTab.id);
-    await setIconIfChanged(text, currentTab.id, READABLE);
-    await action.setBadgeText({ text: '', tabId: currentTab.id });
+    await showBadgeText(text, activeTab.id, settings);
   }
-
 
   await action.setTitle({
     title: `Tab Counter\nTabs in this window:  ${currentWindow}\nTabs in all windows: ${allTabs}\nNumber of windows: ${allWindows}`,
-    tabId: currentTab.id
+    tabId: activeTab.id
   });
+}
 
-};
 
 
 // Prevent from firing too frequently or flooding at a window or restore
-const lazyUpdateIcon = debounce(updateIcon, 250)
+  const lazyUpdateIcon = debounce(() => {
+    updateIcon().catch(e => console.error('[tab-counter] updateIcon failed', e));
+  }, 250);
+
 
 // Prioritize active leading edge of every 1 second on tab switch (fluid update for new tabs)
 const lazyActivateUpdateIcon = debounce(updateIcon, 1000, { leading: true })
@@ -534,14 +577,13 @@ const update = function update () { setTimeout(lazyUpdateIcon, 150) }
 action.setBadgeText({ text: 'wait' })
 action.setBadgeBackgroundColor({ color: '#000000' })
 
-// Handler for when current tab changes
-const tabOnActivatedHandler = function tabOnActivatedHandler () {
-  // Run normal update for most events
-  update()
 
-  // Prioritize active (fluid update for new tabs)
-  lazyActivateUpdateIcon()
-}
+const tabOnActivatedHandler = function tabOnActivatedHandler () {
+  // Leading-edge immediate snapshot for fast UI
+  lazyActivateUpdateIcon();
+  // (Remove the extra update(); it was causing the parallel call + flicker)
+};
+
 
 // Load and apply icon and badge color settings
 const checkSettings = async function checkSettings (settingsUpdate) {
