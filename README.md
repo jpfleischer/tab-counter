@@ -1,7 +1,9 @@
-tab-counter [![Travis](https://img.shields.io/travis/DaAwesomeP/tab-counter.svg?style=flat-square)](https://travis-ci.org/DaAwesomeP/tab-counter)
+tab-counter
 ===========
 
 # new
+
+it is available at https://addons.mozilla.org/en-US/firefox/addon/countdemtabs/
 
 ```bash
 npm i -g web-ext
