@@ -30,12 +30,28 @@ const debounce = (fn, wait, opts = {}) => {
   };
 };
 
+const log = (...a) => console.log('[tab-counter]', ...a);
+log('background loaded', browser.runtime.getManifest().version);
 
 // ---- Action alias (MV2/MV3 safe) ----
 const action = (browser.action || browser.browserAction);
+
 // Make text ~18% taller and ~12% narrower (so it still fits)
 const TALL = { scaleX: 0.88, scaleY: 1.18 };
-function makeCanvas(size) { const c=document.createElement('canvas'); c.width=size; c.height=size; return c; }
+
+
+function makeCanvas(size) {
+  // Works in MV2 background pages and MV3 service workers
+  if (typeof OffscreenCanvas !== 'undefined') {
+    const c = new OffscreenCanvas(size, size);
+    c.width = size; c.height = size;
+    return c;
+  }
+  const c = document.createElement('canvas');
+  c.width = size; c.height = size;
+  return c;
+}
+
 
 const FONT_STACK = `"Arial Narrow","Roboto Condensed","Noto Sans Condensed",
                     system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif`;
@@ -68,11 +84,9 @@ const READABLE = {
   fg: '#ffffff',
   bg: '#000000',
   fontFamily: 'system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif',
-
-  // NEW: aim to show ~3 digits in the frame at once
+  // aim to show ~3 digits in the frame at once
   visibleDigitsStart: 2
 };
-
 
 // Wide, heavy faces first; then decent fallbacks
 const FONT_STACK_WIDE = `"Arial Black","Segoe UI Black","Impact",
@@ -83,19 +97,18 @@ const WIDE = {
   styleKey: 'WIDEv1',
   padPct: 0.02,
   cornerRadiusPct: 0.06,
-  maxWpct: 0.98,   // let text use almost full width
+  maxWpct: 0.98,
   maxHpct: 0.90,
-  scaleX: 1.06,    // widen glyphs
-  scaleY: 1.12,    // still a bit tall, but not too skinny
-  fontWeight: 900, // heaviest available
-  strokePct: 0.12, // thicker outline
+  scaleX: 1.06,
+  scaleY: 1.12,
+  fontWeight: 900,
+  strokePct: 0.12,
   fg: '#ffffff',
   bg: '#000000',
   fontFamily: FONT_STACK_WIDE,
-  boldPasses: 4,       // extra fills to fake-bold
-  boldOffsetPct: 0.02  // offset per pass (~2% of icon size)
+  boldPasses: 4,
+  boldOffsetPct: 0.02
 };
-
 
 const abbreviate = n => {
   n = Number(n);
@@ -108,17 +121,7 @@ const abbreviate = n => {
   return Math.round(n/1_000_000_000) + 'B';
 };
 
-const focusHandler = (winId) => {
-  if (winId === browser.windows.WINDOW_ID_NONE) {
-    // Firefox lost focus → pause animations
-    pauseAllPans();
-  } else {
-    // Refocused → resume the active tab's pan and refresh the icon
-    resumeCurrentTabPan();
-    update(); // optional but nice to refresh counts immediately
-  }
-};
-
+// ====== ICON / BADGE HELPERS ======
 function clearActionIcon(tabId) {
   const makeClear = (size) => {
     const c = document.createElement('canvas');
@@ -128,17 +131,15 @@ function clearActionIcon(tabId) {
   return action.setIcon({ imageData: { 16: makeClear(16), 32: makeClear(32) }, tabId });
 }
 
-
 async function showBadgeText(text, tabId, settings) {
-  // 1) fully stop any animation & forget prior renders
+  // fully stop any animation & forget prior renders
   stopPan(tabId);
   panStates.delete(tabId);
   lastIconTextByTab.delete(tabId);
 
-  // 2) HARD-CLEAR the icon so the native badge is dominant
+  // clear icon so native badge is dominant
   await clearActionIcon(tabId);
 
-  // 3) colors (best-effort)
   try {
     await action.setBadgeBackgroundColor({ color: settings.badgeColor || '#000000' });
     if (settings.badgeTextColorAuto !== true && settings.badgeTextColor) {
@@ -148,15 +149,12 @@ async function showBadgeText(text, tabId, settings) {
     }
   } catch {}
 
-  // 4) native badge text
   await action.setBadgeText({ text, tabId });
   log('badge set', text);
 }
 
-
 // per-tab pan state
 const panStates = new Map(); // tabId -> {timer, text, styleKey, geom16, geom32, off, dir}
-
 
 function computeGeom(size, text, opts) {
   const pad = Math.round(size * (opts.padPct ?? 0.05));
@@ -188,7 +186,7 @@ function computeGeom(size, text, opts) {
   // 2) Constrain so N digits fit in the frame width
   const isDigits = /^[0-9]+$/.test(text);
   const targetN  = Math.min(Math.max(1, opts.visibleDigitsStart ?? 3), text.length);
-  const probeStr = isDigits ? '8'.repeat(targetN) : text.slice(0, targetN); // “8” is widest digit
+  const probeStr = isDigits ? '8'.repeat(targetN) : text.slice(0, targetN);
 
   while (fontSize > 6) {
     ctx.font = `${opts.fontWeight ?? 700} ${fontSize}px ${opts.fontFamily ?? 'sans-serif'}`;
@@ -209,8 +207,6 @@ function computeGeom(size, text, opts) {
   return { size, pad, r, contentW, contentH, fontSize, w: fullW, maxOffset, lineW, scaleX, scaleY };
 }
 
-
-// draw one frame at a given horizontal offset (0..maxOffset)
 function renderPannedFrame(text, geom, offset, opts) {
   const { size, pad, r, contentW, contentH, fontSize, lineW, scaleX, scaleY } = geom;
   const canvas = makeCanvas(size);
@@ -236,12 +232,11 @@ function renderPannedFrame(text, geom, offset, opts) {
   ctx.lineWidth = lineW;
   ctx.font = `${opts.fontWeight ?? 700} ${fontSize}px ${opts.fontFamily ?? 'sans-serif'}`;
 
-  const cx = pad - offset;                       // pan: shift left by offset
-  const cy = pad + contentH / 2;                 // vertical center
+  const cx = pad - offset;
+  const cy = pad + contentH / 2;
   ctx.translate(Math.round(cx), Math.round(cy));
   ctx.scale(scaleX, scaleY);
 
-  // draw text once; stroke gives a crisp edge
   ctx.fillText(text, 0, 0);
   ctx.strokeText(text, 0, 0);
 
@@ -253,7 +248,6 @@ function pauseAllPans() {
   const now = performance.now();
   for (const s of panStates.values()) {
     if (s.timer) {
-      // save where we are in the cycle (0..1), then stop
       s.phaseU = ((now - s.t0) % s.cycleMs) / s.cycleMs;
       clearInterval(s.timer);
       s.timer = null;
@@ -265,15 +259,12 @@ function resumeCurrentTabPan() {
   browser.tabs.query({ currentWindow: true, active: true }).then(([tab]) => {
     if (!tab) return;
     const s = panStates.get(tab.id);
-    // Only resume if it’s a long numeric string (4+)
     if (s && !s.timer && /^\d{4,}$/.test(s.text)) {
       const opts = { ...(s.opts || READABLE), startPhaseU: s.phaseU ?? 0 };
       startOrUpdatePan(s.text, tab.id, opts);
     }
   }).catch(() => {});
 }
-
-
 
 function stopPan(tabId) {
   const s = panStates.get(tabId);
@@ -282,6 +273,7 @@ function stopPan(tabId) {
   panStates.delete(tabId);
 }
 browser.tabs.onRemoved.addListener(stopPan);
+
 // helper easing (0..1 → 0..1 with zero slope at 0,1 and fast mid)
 const easeCos = (u) => (1 - Math.cos(2 * Math.PI * u)) / 2;
 
@@ -292,17 +284,14 @@ async function startOrUpdatePan(text, tabId, opts = READABLE) {
       prev.styleKey === (opts.styleKey || '') &&
       (prev.opts?.panPeriodMs ?? 2400) === (opts.panPeriodMs ?? 2400) &&
       (prev.opts?.fps ?? 30) === (opts.fps ?? 30)) {
-    if (prev.timer) return; // already running this exact animation
-    // if paused, we'll fall through to re-arm below
+    if (prev.timer) return;
   }
 
   stopPan(tabId);
 
-  // geometry for both sizes
   const geom16 = computeGeom(16, text, opts);
   const geom32 = computeGeom(32, text, opts);
 
-  // if text already fits → draw once, no animation
   if (geom16.maxOffset === 0 && geom32.maxOffset === 0) {
     await setIconWithText(text, tabId, opts);
     return;
@@ -313,11 +302,10 @@ async function startOrUpdatePan(text, tabId, opts = READABLE) {
   const startU   = typeof opts.startPhaseU === 'number' ? opts.startPhaseU : 0;
   const t0       = performance.now() - startU * cycleMs;
 
-
   const timer = setInterval(async () => {
     const t  = performance.now() - t0;
-    const u  = (t % cycleMs) / cycleMs;          // 0..1
-    const e  = easeCos(u);                        // 0..1..0 (smooth)
+    const u  = (t % cycleMs) / cycleMs;
+    const e  = easeCos(u);
     const o32 = geom32.maxOffset * e;
     const o16 = geom16.maxOffset * e;
 
@@ -330,9 +318,7 @@ async function startOrUpdatePan(text, tabId, opts = READABLE) {
     timer, text, styleKey: opts.styleKey || '', opts, geom16, geom32,
     t0, cycleMs, phaseU: startU
   });
-
 }
-
 
 function roundRect(ctx, x, y, w, h, r) {
   r = Math.min(r, w/2, h/2);
@@ -359,7 +345,6 @@ function drawIconText(text, size, opts = {}) {
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   ctx.clearRect(0, 0, size, size);
 
-  // background square (almost full-bleed)
   const pad = Math.round(size * padPct);
   const r   = Math.round(size * cornerRadiusPct);
   const contentW = size - 2*pad;
@@ -372,27 +357,22 @@ function drawIconText(text, size, opts = {}) {
   const digitsOnly = /^[0-9]+$/.test(text);
   const len = text.length;
 
-  // If too many digits, abbreviate so it's readable
   if (digitsOnly && len >= 7) {
     text = abbreviate(text);
     return drawSingleLine(ctx, text, size, { pad, contentW, contentH, scaleX, scaleY, maxWpct, maxHpct, fontWeight, strokePct, fg, fontFamily });
   }
 
-  // 1–3 digits: single line (tall)
   if (!digitsOnly || len <= 3) {
     return drawSingleLine(ctx, text, size, { pad, contentW, contentH, scaleX, scaleY, maxWpct, maxHpct, fontWeight, strokePct, fg, fontFamily });
   }
 
-  // 4–6 digits: two rows, grid cells
-  // 4 → 2x2, 5–6 → 2 rows with 3 columns (last cell may be empty)
   const rows = 2;
   const cols = (len === 4) ? 2 : 3;
   const topCount = Math.min(Math.ceil(len / 2), cols);
   const top = text.slice(0, topCount).padEnd(cols, ' ');
   const bottom = text.slice(topCount).padEnd(cols, ' ');
-  const cells = (top + bottom).split(''); // length = rows*cols
+  const cells = (top + bottom).split('');
 
-  // Fit a single character to cell size (use “8” as widest digit)
   const cellW = contentW / cols;
   const cellH = contentH / rows;
   const maxW = cellW * 0.94;
@@ -408,25 +388,19 @@ function drawIconText(text, size, opts = {}) {
     fontSize--;
   }
 
-
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillStyle = fg;
   ctx.strokeStyle = 'rgba(0,0,0,0.7)';
   ctx.lineJoin = 'round';
 
-
-  // draw digits in their grid cells
   ctx.save();
   ctx.translate(pad, pad);
-  const baselineOffset = cellH * 0.64; // a bit below center looks taller
-  const lineW = Math.max(1, Math.round(size * strokePct) / Math.max(scaleX, scaleY));
 
   for (let rIdx = 0; rIdx < rows; rIdx++) {
     for (let cIdx = 0; cIdx < cols; cIdx++) {
       const ch = cells[rIdx * cols + cIdx];
       if (ch === ' ') continue;
-      // per-cell draw (centered), inside your rIdx/cIdx loop
       const cx = (cIdx + 0.5) * cellW;
       const cy = (rIdx + 0.5) * cellH;
 
@@ -437,7 +411,6 @@ function drawIconText(text, size, opts = {}) {
       ctx.fillText(ch, 0, 0);
       ctx.strokeText(ch, 0, 0);
       ctx.restore();
-
     }
   }
   ctx.restore();
@@ -445,7 +418,6 @@ function drawIconText(text, size, opts = {}) {
   return ctx.getImageData(0, 0, size, size);
 }
 
-// single-line tall text helper (centered, crisp)
 function drawSingleLine(ctx, text, size, p) {
   const { pad, contentW, contentH, scaleX, scaleY, maxWpct, maxHpct, fontWeight, strokePct, fg, fontFamily } = p;
 
@@ -477,7 +449,6 @@ function drawSingleLine(ctx, text, size, p) {
   ctx.translate(Math.round(cx), Math.round(cy));
   ctx.scale(scaleX, scaleY);
   ctx.lineWidth = Math.max(1, Math.round(size * (strokePct ?? 0.08)) / Math.max(scaleX, scaleY));
-  // draw: fill then a light stroke for crisp edges
   ctx.fillText(text, 0, 0);
   ctx.strokeText(text, 0, 0);
   ctx.restore();
@@ -485,68 +456,192 @@ function drawSingleLine(ctx, text, size, p) {
   return ctx.getImageData(0, 0, size, size);
 }
 
-
 async function setIconWithText(text, tabId, opts = {}) {
   const img16 = drawIconText(text, 16, opts);
   const img32 = drawIconText(text, 32, opts);
   await action.setIcon({ imageData: { 16: img16, 32: img32 }, tabId });
 }
 
-
-// remember last text+style per tab so we don't redraw unnecessarily
 const lastIconTextByTab = new Map();
 
 async function setIconIfChanged(text, tabId, opts = {}) {
-  const styleKey = opts.styleKey || '';                   // identify the style
+  const styleKey = opts.styleKey || '';
   const key = `${text}|${styleKey}`;
   const prev = lastIconTextByTab.get(tabId);
-  if (prev === key) return;                               // no change → skip
-  await setIconWithText(text, tabId, opts);               // draw
-  lastIconTextByTab.set(tabId, key);                      // remember
+  if (prev === key) return;
+  await setIconWithText(text, tabId, opts);
+  lastIconTextByTab.set(tabId, key);
 }
 
 browser.tabs.onRemoved.addListener(tabId => lastIconTextByTab.delete(tabId));
 
+// ====== INCREMENTAL COUNTS (O(1) PER EVENT) ======
+const winCounts = new Map();   // winId -> { visible: 0, total: 0 }
+const tabHidden = new Map();   // tabId -> boolean
+let activeWinId = null;
 
-// 1) Guard: only the most recent update is allowed to set UI
-let _updateGen = 0;
+function ensureWin(winId) {
+  if (!winCounts.has(winId)) winCounts.set(winId, { visible: 0, total: 0 });
+  return winCounts.get(winId);
+}
 
-async function updateIcon () {
-  const myGen = ++_updateGen;
+async function initCounts() {
+  winCounts.clear(); tabHidden.clear();
+  const wins = await browser.windows.getAll({ windowTypes: ['normal'] });
+  for (const w of wins) ensureWin(w.id);
 
-  // --- Gather data using one tabs list to avoid cross-call drift ---
-  const [activeTab] = await browser.tabs.query({ currentWindow: true, active: true });
-  if (!activeTab) return;
+  const tabs = await browser.tabs.query({ windowType: 'normal' });
+  for (const t of tabs) {
+    const w = ensureWin(t.windowId);
+    w.total++;
+    if (!t.hidden) w.visible++;
+    tabHidden.set(t.id, !!t.hidden);
+  }
+  const [active] = await browser.tabs.query({ currentWindow: true, active: true });
+  activeWinId = active?.windowId ?? wins[0]?.id ?? null;
+}
 
-  // One shot for all tabs (less jitter than two separate queries)
-  const allTabsList = await browser.tabs.query({});                // all windows
-  const normalWins  = new Set((await browser.windows.getAll({ windowTypes: ['normal'] })).map(w => w.id));
+function readCounts() {
+  const curr = String(winCounts.get(activeWinId)?.visible ?? 0);
+  const all  = String([...winCounts.values()].reduce((s,w)=>s+w.visible,0));
+  const wins = String(winCounts.size);
+  return { currentWindow: curr, allTabs: all, allWindows: wins };
+}
 
-  // Bail if a newer update started while we were awaiting
-  if (myGen !== _updateGen) return;
+// ====== EVENT DELTA HANDLERS ======
+function tabOnActivatedHandler({ windowId }) {
+  if (windowId && windowId !== browser.windows.WINDOW_ID_NONE) activeWinId = windowId;
+  schedulePaint();
+}
 
-  const currentWindow = allTabsList.filter(t => t.windowId === activeTab.windowId && normalWins.has(t.windowId)).length.toString();
-  const allTabs       = allTabsList.filter(t => normalWins.has(t.windowId)).length.toString();
-  const allWindows    = String(normalWins.size);
+function tabsOnCreatedHandler(tab) {
+  const w = ensureWin(tab.windowId);
+  w.total++; if (!tab.hidden) w.visible++;
+  tabHidden.set(tab.id, !!tab.hidden);
+  schedulePaint();
+}
 
-  // Decide text
+function tabsOnRemovedHandler(tabId, info) {
+  const wasHidden = tabHidden.get(tabId) ?? true;
+  const w = winCounts.get(info.windowId);
+  if (w) { w.total--; if (!wasHidden) w.visible--; }
+  tabHidden.delete(tabId);
+  schedulePaint();
+}
+
+function tabsOnUpdatedHandler(tabId, changeInfo, tab) {
+  if ('hidden' in changeInfo) {
+    const prevHidden = tabHidden.get(tabId);
+    if (prevHidden !== changeInfo.hidden) {
+      const w = ensureWin(tab.windowId);
+      if (changeInfo.hidden) w.visible--; else w.visible++;
+      tabHidden.set(tabId, !!tab.hidden);
+      schedulePaint();
+    }
+  }
+}
+
+function tabsOnDetachedHandler(tabId, { oldWindowId }) {
+  const wasHidden = tabHidden.get(tabId) ?? true;
+  const w = winCounts.get(oldWindowId);
+  if (w) { w.total--; if (!wasHidden) w.visible--; }
+  schedulePaint();
+}
+
+async function tabsOnAttachedHandler(tabId, { newWindowId }) {
+  ensureWin(newWindowId);
+  let hidden = tabHidden.get(tabId);
+  if (hidden === undefined) {
+    try {
+      const t = await browser.tabs.get(tabId);
+      hidden = !!t.hidden;
+    } catch { hidden = true; }
+  }
+  const w = winCounts.get(newWindowId);
+  w.total++; if (!hidden) w.visible++;
+  tabHidden.set(tabId, hidden);
+  schedulePaint();
+}
+
+function tabsOnReplacedHandler(addedTabId, removedTabId) {
+  const wasHidden = tabHidden.get(removedTabId);
+  if (wasHidden !== undefined) {
+    tabHidden.set(addedTabId, wasHidden);
+    tabHidden.delete(removedTabId);
+    schedulePaint();
+  }
+}
+
+function windowsOnCreatedHandler(w) {
+  ensureWin(w.id);
+  schedulePaint();
+}
+
+function windowsOnRemovedHandler(winId) {
+  winCounts.delete(winId);
+  if (activeWinId === winId) {
+    // best-effort: pick any remaining window as active
+    const first = winCounts.keys().next().value ?? null;
+    activeWinId = first;
+  }
+  schedulePaint();
+}
+
+// Also handle focus (pause/resume pan + update active window)
+const focusHandler = (winId) => {
+  if (winId === browser.windows.WINDOW_ID_NONE) {
+    pauseAllPans();
+  } else {
+    activeWinId = winId;
+    resumeCurrentTabPan();
+    update(); // wrapper → schedulePaint()
+  }
+};
+
+// ====== BADGE PAINT (READS CACHED COUNTS) ======
+let _paintGen = 0;
+async function paintBadge() {
+  const myGen = ++_paintGen;
+
   const settings = await browser.storage.local.get();
   const counterPreference = settings.counter || 0;
 
-  if (counterPreference === 3) return;
+  // If user disabled counter UI entirely, make sure the global badge is blank.
+  if (counterPreference === 3) {
+    try { await action.setBadgeText({ text: '' }); } catch {}
+    return;
+  }
 
+  // Compute counts from cached state
+  const { currentWindow, allTabs, allWindows } = readCounts();
   let text = currentWindow;
   if (counterPreference === 1) text = allTabs;
   else if (counterPreference === 2) text = `${currentWindow}/${allTabs}`;
   else if (counterPreference === 4) text = allWindows;
 
-  // Paint (with your existing badge/pan logic)
   const digitsOnly = /^[0-9]+$/.test(text);
-  if (digitsOnly && text.length >= 4) {
-    const period = Number(settings.panPeriodMs) || 2400;
+  const animate = digitsOnly && text.length >= 4;
+
+  // IMPORTANT:
+  // - If animating (4+ digits), keep the GLOBAL/default badge BLANK so the panel
+  //   doesn’t show a static number over the animated icon.
+  // - Otherwise, keep the global badge in sync with the short text.
+  try { await action.setBadgeText({ text: animate ? '' : text }); } catch {}
+
+  // Now update the active tab (per-tab) badge/icon
+  const [activeTab] = await browser.tabs.query({ currentWindow: true, active: true });
+  if (!activeTab) return; // no tab to paint; global is already correct
+
+  // If another paint was scheduled while we awaited, bail out
+  if (myGen !== _paintGen) return;
+
+  if (animate) {
+    // Blank the per-tab badge and run the panning icon animation
     await action.setBadgeText({ text: '', tabId: activeTab.id });
+    const period = Number(settings.panPeriodMs) || 2400;
     await startOrUpdatePan(text, activeTab.id, { ...READABLE, panPeriodMs: period });
   } else {
+    // Short numbers use the native badge text
     await showBadgeText(text, activeTab.id, settings);
   }
 
@@ -558,171 +653,165 @@ async function updateIcon () {
 
 
 
-// Prevent from firing too frequently or flooding at a window or restore
-  const lazyUpdateIcon = debounce(() => {
-    updateIcon().catch(e => console.error('[tab-counter] updateIcon failed', e));
-  }, 250);
+// Coalesce paints slightly to skip transient N-1 states
+const schedulePaint = debounce(() => {
+  paintBadge().catch(e => console.error('[tab-counter] paintBadge failed', e));
+}, 60);
 
-
-// Prioritize active leading edge of every 1 second on tab switch (fluid update for new tabs)
-const lazyActivateUpdateIcon = debounce(updateIcon, 1000, { leading: true })
-
-// Will be error if tab has been removed, so wait 150ms;
-// onActivated fires slightly before onRemoved,
-// but tab is gone during onActivated.
-// Must be a function to avoid event parameter errors
-const update = function update () { setTimeout(lazyUpdateIcon, 150) }
+// Legacy wrapper so existing calls still work
+const update = function update () { setTimeout(schedulePaint, 120) };
 
 // Init badge for when addon starts and not yet loaded tabs
-action.setBadgeText({ text: 'wait' })
-action.setBadgeBackgroundColor({ color: '#000000' })
+action.setBadgeText({ text: 'wait' });
+action.setBadgeBackgroundColor({ color: '#000000' });
 
-
-const tabOnActivatedHandler = function tabOnActivatedHandler () {
-  // Leading-edge immediate snapshot for fast UI
-  lazyActivateUpdateIcon();
-  // (Remove the extra update(); it was causing the parallel call + flicker)
-};
-
-
-// Load and apply icon and badge color settings
+// ====== SETTINGS / WIRING ======
 const checkSettings = async function checkSettings (settingsUpdate) {
   // Get settings object
-  let settings = await browser.storage.local.get()
-  // Get the browser name and version
-  let browserInfo
-  if (browser.runtime.hasOwnProperty('getBrowserInfo')) browserInfo = await browser.runtime.getBrowserInfo()
-  else {
-    browserInfo = { // polyfill doesn't seem to support this method, but we're only concerned with FF at the moment
-      version: '0',
-      vendor: '',
-      name: ''
-    }
-  }
-  const browserVersionSplit = browserInfo.version.split('.').map((n) => parseInt(n))
+  let settings = await browser.storage.local.get();
 
-  // Set base defaults if new insall
+  // Get the browser name and version
+  let browserInfo;
+  if (browser.runtime.hasOwnProperty('getBrowserInfo')) browserInfo = await browser.runtime.getBrowserInfo();
+  else {
+    browserInfo = { version: '0', vendor: '', name: '' };
+  }
+  const browserVersionSplit = browserInfo.version.split('.').map((n) => parseInt(n));
+
+  // Set base defaults if new install
   if (!settings.hasOwnProperty('version')) {
     settings = {
       version: '0.0.0',
       icon: 'tabcounter.plain.min.svg',
       counter: 0,
       badgeColor: '#999999',
-      panPeriodMs: 2400              // ⬅️ NEW: full left→right→left loop duration
-    }
+      panPeriodMs: 2400
+    };
   }
 
   // Perform settings upgrade
   if (settings.version !== browser.runtime.getManifest().version) {
-    let versionSplit = settings.version.split('.').map((n) => parseInt(n))
-    // Upgrade
-
-    // since v0.3.0, icons now adapt to theme so reset icon setting
-    if (versionSplit[0] === 0 && versionSplit[1] < 3) settings.icon = 'tabcounter.plain.min.svg'
-
-    // disable the "both" counter option in version v0.3.0 due to the four-character badge limit (renders the feature uselss)
+    let versionSplit = settings.version.split('.').map((n) => parseInt(n));
+    if (versionSplit[0] === 0 && versionSplit[1] < 3) settings.icon = 'tabcounter.plain.min.svg';
     if (versionSplit[0] === 0 && versionSplit[1] < 3) {
       if (settings.hasOwnProperty('counter')) {
-        if (settings.counter === 2) settings.counter = 0
+        if (settings.counter === 2) settings.counter = 0;
       }
     }
-
-    // add badgeTextColor support if at least v0.4.0 and FF 63
     if (versionSplit[0] === 0 && versionSplit[1] < 4 && browserInfo.vendor === 'Mozilla' && browserInfo.name === 'Firefox' && browserVersionSplit[0] >= 63) {
-      settings.badgeTextColorAuto = true
-      settings.badgeTextColor = '#000000'
+      settings.badgeTextColorAuto = true;
+      settings.badgeTextColor = '#000000';
     }
   }
   browser.storage.local.set(Object.assign(settings, {
     version: browser.runtime.getManifest().version
-  }))
+  }));
 
-  // Apply badge color or use default
-  if (settings.hasOwnProperty('badgeColor')) action.setBadgeBackgroundColor({ color: settings.badgeColor })
-  else action.setBadgeBackgroundColor({ color: '#000000' })
+  // Apply badge colors (hardened)
+  try {
+    if (settings.hasOwnProperty('badgeColor')) {
+      await action.setBadgeBackgroundColor({ color: settings.badgeColor });
+    } else {
+      await action.setBadgeBackgroundColor({ color: '#000000' });
+    }
 
-  // Apply badge text color or use default if not set or not supported
-  if (settings.hasOwnProperty('badgeTextColor')) {
-    if (settings.badgeTextColorAuto !== true) action.setBadgeTextColor({ color: settings.badgeTextColor })
-    else action.setBadgeTextColor({ color: null })
+    if (settings.hasOwnProperty('badgeTextColor')) {
+      if (settings.badgeTextColorAuto !== true) {
+        await action.setBadgeTextColor({ color: settings.badgeTextColor });
+      } else {
+        await action.setBadgeTextColor({ color: null });
+      }
+    }
+  } catch (e) {
+    console.warn('[tab-counter] badge color setup skipped', e);
   }
 
-  // Apply icon selection or use default
-  if (settings.hasOwnProperty('icon')) action.setIcon({ path: `icons/${settings.icon}` })
-  else action.setIcon({ path: 'icons/tabcounter.plain.min.svg' })
+  // Apply icon selection
+  if (settings.hasOwnProperty('icon')) action.setIcon({ path: `icons/${settings.icon}` });
+  else action.setIcon({ path: 'icons/tabcounter.plain.min.svg' });
 
   // Get counter preference
-  let counterPreference
-  if (!settings.hasOwnProperty('counter')) counterPreference = 0
-  else counterPreference = settings.counter
+  let counterPreference;
+  if (!settings.hasOwnProperty('counter')) counterPreference = 0;
+  else counterPreference = settings.counter;
 
-  // Either add badge update events or don't if not set to
+  // Wire listeners / init
   if (counterPreference !== 3) {
-    // Watch for tab and window events five seconds after browser startup
-    setTimeout(() => {
-      browser.tabs.onActivated.addListener(tabOnActivatedHandler)
-      browser.tabs.onAttached.addListener(update)
-      browser.tabs.onCreated.addListener(update)
-      browser.tabs.onDetached.addListener(update)
-      browser.tabs.onMoved.addListener(update)
-      browser.tabs.onReplaced.addListener(update)
-      browser.tabs.onRemoved.addListener(update)
-      browser.tabs.onUpdated.addListener(update)
-      browser.windows.onCreated.addListener(update)
-      browser.windows.onRemoved.addListener(update)
+    setTimeout(async () => {
+      // Ensure fresh init (once per startup or settings update)
+      await initCounts();
+
+      // Remove any previous listeners to avoid dupes
+      browser.tabs.onActivated.removeListener(tabOnActivatedHandler);
+      browser.tabs.onCreated.removeListener(tabsOnCreatedHandler);
+      browser.tabs.onRemoved.removeListener(tabsOnRemovedHandler);
+      browser.tabs.onUpdated.removeListener(tabsOnUpdatedHandler);
+      browser.tabs.onDetached.removeListener(tabsOnDetachedHandler);
+      browser.tabs.onAttached.removeListener(tabsOnAttachedHandler);
+      browser.tabs.onReplaced.removeListener(tabsOnReplacedHandler);
+      browser.windows.onCreated.removeListener(windowsOnCreatedHandler);
+      browser.windows.onRemoved.removeListener(windowsOnRemovedHandler);
+      browser.windows.onFocusChanged.removeListener(focusHandler);
+
+      // Add optimized delta listeners
+      browser.tabs.onActivated.addListener(tabOnActivatedHandler);
+      browser.tabs.onCreated.addListener(tabsOnCreatedHandler);
+      browser.tabs.onRemoved.addListener(tabsOnRemovedHandler);
+      browser.tabs.onUpdated.addListener(tabsOnUpdatedHandler);
+      browser.tabs.onDetached.addListener(tabsOnDetachedHandler);
+      browser.tabs.onAttached.addListener(tabsOnAttachedHandler);
+      browser.tabs.onReplaced.addListener(tabsOnReplacedHandler);
+      browser.windows.onCreated.addListener(windowsOnCreatedHandler);
+      browser.windows.onRemoved.addListener(windowsOnRemovedHandler);
       if (!browser.windows.onFocusChanged.hasListener(focusHandler)) {
         browser.windows.onFocusChanged.addListener(focusHandler);
       }
 
+      // Kick the first paint; your step #1 keeps global badge in sync
+      schedulePaint();
 
-    }, settingsUpdate ? 1 : 5000) // add listeners immeadietly if not browser startup
+      // Step #2: clear the default "wait" once things are wired (harmless if already repainted)
+      try { await action.setBadgeText({ text: '' }); } catch {}
+    }, settingsUpdate ? 1 : 500); // Step #4: faster cold start (was 5000ms)
   } else {
-    // remove the listeners that were added
-    browser.tabs.onActivated.removeListener(tabOnActivatedHandler)
-    browser.tabs.onAttached.removeListener(update)
-    browser.tabs.onCreated.removeListener(update)
-    browser.tabs.onDetached.removeListener(update)
-    browser.tabs.onMoved.removeListener(update)
-    browser.tabs.onReplaced.removeListener(update)
-    browser.tabs.onRemoved.removeListener(update)
-    browser.tabs.onUpdated.removeListener(update)
-    browser.windows.onCreated.removeListener(update)
-    browser.windows.onRemoved.removeListener(update)
-    browser.windows.onFocusChanged.removeListener(focusHandler)
+    // Remove listeners and clear UI
+    browser.tabs.onActivated.removeListener(tabOnActivatedHandler);
+    browser.tabs.onCreated.removeListener(tabsOnCreatedHandler);
+    browser.tabs.onRemoved.removeListener(tabsOnRemovedHandler);
+    browser.tabs.onUpdated.removeListener(tabsOnUpdatedHandler);
+    browser.tabs.onDetached.removeListener(tabsOnDetachedHandler);
+    browser.tabs.onAttached.removeListener(tabsOnAttachedHandler);
+    browser.tabs.onReplaced.removeListener(tabsOnReplacedHandler);
+    browser.windows.onCreated.removeListener(windowsOnCreatedHandler);
+    browser.windows.onRemoved.removeListener(windowsOnRemovedHandler);
+    browser.windows.onFocusChanged.removeListener(focusHandler);
 
-    // hide the "wait" badge if set not to show a badge
-    action.setBadgeText({ text: '' })
-    action.setTitle({ title: 'Tab Counter' })
+    action.setBadgeText({ text: '' });
+    action.setTitle({ title: 'Tab Counter' });
 
-    // check each tab that was overriden with a counter badge
-    let allTabs = await browser.tabs.query({})
+    let allTabs = await browser.tabs.query({});
     allTabs.forEach((tab) => {
-      action.setBadgeText({
-        text: '',
-        tabId: tab.id
-      })
-      action.setTitle({
-        title: 'Tab Counter',
-        tabId: tab.id
-      })
-    })
+      action.setBadgeText({ text: '', tabId: tab.id });
+      action.setTitle({ title: 'Tab Counter', tabId: tab.id });
+    });
   }
-}
+};
+
 
 // Load settings and update badge at app start
 const applyAll = async function applyAll (settingsUpdate) {
-  await checkSettings(settingsUpdate) // Icon and badge color
-  await update() // Badge text options
-}
-applyAll()
+  await checkSettings(settingsUpdate);
+  await update();
+  // Clear the startup "wait" only on cold start (not during settings updates)
+  if (!settingsUpdate) {
+    try { await action.setBadgeText({ text: '' }); } catch {}
+  }
+};
 
-// Listen for settings changes and update color, icon, and badge text instantly
-// Bug: this listener run nonstop
-// browser.storage.onChanged.addListener(applyAll)
+applyAll();
 
 // Listen for internal addon messages
 const messageHandler = async function messageHandler (request, sender, sendResponse) {
-  // Check for a settings update
-  if (request.hasOwnProperty('updateSettings')) if (request.updateSettings) applyAll(true)
-}
-browser.runtime.onMessage.addListener(messageHandler)
+  if (request.hasOwnProperty('updateSettings')) if (request.updateSettings) applyAll(true);
+};
+browser.runtime.onMessage.addListener(messageHandler);

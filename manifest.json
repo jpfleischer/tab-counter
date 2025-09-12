@@ -5,7 +5,7 @@
   "developer": {
     "name": "stapmoshun"
   },
-  "version": "1.0.1",
+  "version": "1.2.0",
   "description": "A great badge for showing tab count, including an animation for 1000+ tabs!",
   "homepage_url": "https://github.com/jpfleischer/tab-counter",
   "manifest_version": 2,
